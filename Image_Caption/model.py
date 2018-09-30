@@ -1,4 +1,4 @@
-
+import tensorflow as tf
 # Parameters for CNN
 batch_size = 32
 image_shape = [224,224,3]
@@ -138,19 +138,11 @@ def decode(expanded_output):
                                name = 'fc')
     return logits
 
-def rnn_and_loss(contexts, senteces, masks):
-    last_memory = tf.placeholder(
-        dtype=tf.float32,
-        shape=[batch_size, num_lstm_units]) # 32 * 512
+def loss_function(logits, labels):
+    loss_ = tf.nn.sparse_softmax_cross_entropy_with_logits(labels = labels, logits = logits)
+    return loss_
 
-    last_output = tf.placeholder(
-        dtype=tf.float32,
-        shape=[batch_size, num_lstm_units]) # 32 * 512
-
-    last_word = tf.placeholder(
-        dtype=tf.int32,
-        shape=[batch_size]) # 32
-    
+def rnn_and_loss(contexts, cap_padded, masks): 
     with tf.variable_scope('word_embedding'):
         embedding_matrix = tf.get_variable(shape=[vocab_size,dim_embedding],
                                     initializer=fc_kernel_initializer,                                    
@@ -159,6 +151,7 @@ def rnn_and_loss(contexts, senteces, masks):
     # Initialize the LSTM using the mean context
     with tf.variable_scope("initialize"):
     #     context_mean = tf.reduce_mean(conv_feats, axis=1) # after shape 32 * 512
+        conv_feats = contexts
         initial_memory, initial_output = initialize(tf.reduce_mean(conv_feats, axis=1))
         initial_state = initial_memory, initial_output # 32 * 512
     lstm = tf.nn.rnn_cell.LSTMCell(
@@ -187,7 +180,9 @@ def rnn_and_loss(contexts, senteces, masks):
     
     for idx in range(num_steps):
         with tf.variable_scope('attend', reuse=tf.AUTO_REUSE):
+            
             alpha = attend(contexts, last_output)
+            
             """attention的第三個步驟： 
             contexts shape == 32 * 196 * 512; 
             alpha shape == 32 * 196
@@ -195,9 +190,9 @@ def rnn_and_loss(contexts, senteces, masks):
             將alpha值乘上 contexts
             """
             context = tf.reduce_sum(contexts * tf.expand_dims(alpha,2), axis = 1) # after shape 32 * 512
-
+            
             tiled_masks = tf.tile(tf.expand_dims(masks[:, idx], 1),
-                                  [1, 196])
+                                  [1, num_ctx])
             masked_alpha = alpha * tiled_masks
             alphas.append(tf.reshape(masked_alpha, [-1]))
 
@@ -225,13 +220,16 @@ def rnn_and_loss(contexts, senteces, masks):
             predictions.append(prediction)
 
             # Compute the loss for this step
-            cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
-              labels=sentences[:, idx],
-              logits=logits)
+            
+           #  cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
+           #    labels=cap_padded[:, idx],
+           #    logits=logits)
+            cross_entropy = loss_function(logits, cap_padded[:, idx])
+            
             masked_cross_entropy = cross_entropy * masks[:, idx]
             cross_entropies.append(masked_cross_entropy)
 
-            ground_truth = tf.cast(sentences[:, idx], tf.int64)
+            ground_truth = tf.cast(cap_padded[:, idx], tf.int64)
             prediction_correct = tf.where(
                   tf.equal(prediction, ground_truth),
                   tf.cast(masks[:, idx], tf.float32),
@@ -241,7 +239,8 @@ def rnn_and_loss(contexts, senteces, masks):
             last_output = output
             last_memory = memory
             last_state = state
-            last_word = sentences[:, idx]
+            last_word = cap_padded[:, idx]
 
         tf.get_variable_scope().reuse_variables() 
-        return predictions, cross_entropies # both are lists 
+        
+        return predictions, cross_entropies, alphas, predictions_correct  # both are lists 
